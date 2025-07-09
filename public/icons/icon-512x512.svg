@@ -1,0 +1,12 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="85" fill="#3b82f6"/>
+  <rect x="42" y="42" width="428" height="428" rx="64" fill="#ffffff"/>
+  <g transform="translate(256, 256)">
+    <!-- Wallet Icon -->
+    <path d="M-64 -42 L64 -42 C75.05 -42 85 -32.05 85 -21 L85 21 C85 32.05 75.05 42 64 42 L-64 42 C-75.05 42 -85 32.05 -85 21 L-85 -21 C-85 -32.05 -75.05 -42 -64 -42 Z" fill="#3b82f6" stroke="#3b82f6" stroke-width="5"/>
+    <path d="M-85 -10 L85 -10" stroke="#ffffff" stroke-width="5"/>
+    <circle cx="42" cy="10" r="8" fill="#ffffff"/>
+    <!-- Money Symbol -->
+    <text x="-42" y="-64" font-family="Arial, sans-serif" font-size="42" font-weight="bold" fill="#3b82f6" text-anchor="middle">$</text>
+  </g>
+</svg>

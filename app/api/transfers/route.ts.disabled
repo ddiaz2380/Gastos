@@ -1,0 +1,224 @@
+import { NextRequest, NextResponse } from 'next/server';
+import db from '@/lib/database';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { 
+      fromAccountId, 
+      toAccountId, 
+      amount, 
+      description, 
+      transferType,
+      scheduledDate 
+    } = body;
+
+    // Validate required fields
+    if (!fromAccountId || !toAccountId || !amount || amount <= 0) {
+      return NextResponse.json(
+        { error: 'Missing required fields or invalid amount' },
+        { status: 400 }
+      );
+    }
+
+    if (fromAccountId === toAccountId) {
+      return NextResponse.json(
+        { error: 'Cannot transfer to the same account' },
+        { status: 400 }
+      );
+    }
+
+    // Get source and destination accounts
+    const sourceAccount = await db.get(
+      'SELECT * FROM accounts WHERE id = ? AND is_active = 1',
+      [fromAccountId]
+    );
+
+    const destinationAccount = await db.get(
+      'SELECT * FROM accounts WHERE id = ? AND is_active = 1',
+      [toAccountId]
+    );
+
+    if (!sourceAccount || !destinationAccount) {
+      return NextResponse.json(
+        { error: 'One or both accounts not found or inactive' },
+        { status: 404 }
+      );
+    }
+
+    // Calculate transfer fee for external transfers
+    const transferFee = transferType === 'external' ? amount * 0.01 : 0;
+    const totalDebit = amount + transferFee;
+
+    // Check if source account has sufficient balance (except for credit accounts)
+    if (sourceAccount.type !== 'credit' && sourceAccount.balance < totalDebit) {
+      return NextResponse.json(
+        { error: 'Insufficient balance in source account' },
+        { status: 400 }
+      );
+    }
+
+    // Start transaction
+    await db.run('BEGIN TRANSACTION');
+
+    try {
+      const transferId = `transfer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const currentDate = scheduledDate || new Date().toISOString();
+
+      // Create debit transaction (source account)
+      await db.run(`
+        INSERT INTO transactions (
+          id, account_id, amount, type, category, description, date, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        `${transferId}_debit`,
+        fromAccountId,
+        totalDebit,
+        'expense',
+        'Transferencia',
+        `Transferencia a ${destinationAccount.name}${description ? ` - ${description}` : ''}`,
+        currentDate,
+        new Date().toISOString()
+      ]);
+
+      // Create credit transaction (destination account)
+      await db.run(`
+        INSERT INTO transactions (
+          id, account_id, amount, type, category, description, date, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        `${transferId}_credit`,
+        toAccountId,
+        amount,
+        'income',
+        'Transferencia',
+        `Transferencia desde ${sourceAccount.name}${description ? ` - ${description}` : ''}`,
+        currentDate,
+        new Date().toISOString()
+      ]);
+
+      // Create fee transaction if applicable
+      if (transferFee > 0) {
+        await db.run(`
+          INSERT INTO transactions (
+            id, account_id, amount, type, category, description, date, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          `${transferId}_fee`,
+          fromAccountId,
+          transferFee,
+          'expense',
+          'Comisiones',
+          'Comisión por transferencia externa',
+          currentDate,
+          new Date().toISOString()
+        ]);
+      }
+
+      // Update account balances
+      await db.run(
+        'UPDATE accounts SET balance = balance - ? WHERE id = ?',
+        [totalDebit, fromAccountId]
+      );
+
+      await db.run(
+        'UPDATE accounts SET balance = balance + ? WHERE id = ?',
+        [amount, toAccountId]
+      );
+
+      // Create transfer record for tracking
+      await db.run(`
+        INSERT INTO transfers (
+          id, from_account_id, to_account_id, amount, fee, description, 
+          transfer_type, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        transferId,
+        fromAccountId,
+        toAccountId,
+        amount,
+        transferFee,
+        description || '',
+        transferType,
+        'completed',
+        new Date().toISOString()
+      ]);
+
+      // Commit transaction
+      await db.run('COMMIT');
+
+      // Get updated account balances
+      const updatedSourceAccount = await db.get(
+        'SELECT * FROM accounts WHERE id = ?',
+        [fromAccountId]
+      );
+
+      const updatedDestinationAccount = await db.get(
+        'SELECT * FROM accounts WHERE id = ?',
+        [toAccountId]
+      );
+
+      return NextResponse.json({
+        success: true,
+        transferId,
+        sourceAccount: updatedSourceAccount,
+        destinationAccount: updatedDestinationAccount,
+        amount,
+        fee: transferFee,
+        totalDebit
+      });
+
+    } catch (error) {
+      // Rollback transaction on error
+      await db.run('ROLLBACK');
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Error processing transfer:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const db = await openDb();
+    const { searchParams } = new URL(request.url);
+    const accountId = searchParams.get('account_id');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    let query = `
+      SELECT 
+        t.*,
+        fa.name as from_account_name,
+        ta.name as to_account_name
+      FROM transfers t
+      LEFT JOIN accounts fa ON t.from_account_id = fa.id
+      LEFT JOIN accounts ta ON t.to_account_id = ta.id
+    `;
+    
+    const params = [];
+    
+    if (accountId) {
+      query += ' WHERE (t.from_account_id = ? OR t.to_account_id = ?)';
+      params.push(accountId, accountId);
+    }
+    
+    query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const transfers = await db.all(query, params);
+
+    return NextResponse.json(transfers);
+  } catch (error) {
+    console.error('Error fetching transfers:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
